@@ -83,6 +83,12 @@ app.post("/api/signup", async (req, res) => {
   if (!name || !email || !password) {
     return res.status(400).json({ error: "name, email, and password are required" });
   }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return res.status(400).json({ error: "Please provide a valid email address" });
+  }
+  if (!/^(?=.*[A-Z])(?=.*[0-9]).{8,16}$/.test(password)) {
+    return res.status(400).json({ error: "Password must be 8-16 characters with at least one uppercase letter and one number" });
+  }
 
   try {
     const existing = await pool.query("SELECT id FROM users WHERE email = $1", [email]);
