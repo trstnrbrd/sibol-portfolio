@@ -4,20 +4,65 @@ const { Pool } = require("pg");
 
 const session = require("express-session");
 const pgSession = require("connect-pg-simple")(session);
+const passport = require("passport");
+const LocalStrategy = require("passport-local").Strategy;
+const bcrypt = require("bcryptjs");
 
 const app = express();
 const pool = new Pool();
 
-app.use(session({
-  store: new pgSession({ pool, tableName: "session" }),
-  secret: process.env.SESSION_SECRET,
-  resave: false,
-  saveUninitialized: false,
-  cookie: {
-    maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
-  },
-}));
+passport.use(
+  new LocalStrategy(
+    { usernameField: "email" },
+    async (email, password, done) => {
+      try {
+        const result = await pool.query(
+          "SELECT * FROM users WHERE email = $1",
+          [email],
+        );
+        const user = result.rows[0];
+        if (!user)
+          return done(null, false, { message: "Incorrect email or password" });
 
+        const match = await bcrypt.compare(password, user.password_hash);
+        if (!match)
+          return done(null, false, { message: "Incorrect email or password" });
+
+        return done(null, user);
+      } catch (err) {
+        return done(err);
+      }
+    },
+  ),
+);
+
+passport.serializeUser((user, done) => {
+  done(null, user.id);
+});
+
+passport.deserializeUser(async (id, done) => {
+  try {
+    const result = await pool.query("SELECT * FROM users WHERE id = $1", [id]);
+    done(null, result.rows[0]);
+  } catch (err) {
+    done(err);
+  }
+});
+
+app.use(
+  session({
+    store: new pgSession({ pool, tableName: "session" }),
+    secret: process.env.SESSION_SECRET,
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+    },
+  }),
+);
+
+app.use(passport.initialize());
+app.use(passport.session());
 app.use(express.json());
 
 app.get("/api/test", (req, res) => {
@@ -31,6 +76,48 @@ app.get("/api/health", async (req, res) => {
   } catch (err) {
     res.status(500).json({ status: "error", message: err.message });
   }
+});
+
+app.post("/api/signup", async (req, res) => {
+  const { name, email, password } = req.body;
+  if (!name || !email || !password) {
+    return res.status(400).json({ error: "name, email, and password are required" });
+  }
+
+  try {
+    const existing = await pool.query("SELECT id FROM users WHERE email = $1", [email]);
+    if (existing.rows.length > 0) {
+      return res.status(409).json({ error: "Email already registered" });
+    }
+
+    const passwordHash = await bcrypt.hash(password, 10);
+    const result = await pool.query(
+      "INSERT INTO users (name, email, password_hash) VALUES ($1, $2, $3) RETURNING id, name, email",
+      [name, email, passwordHash]
+    );
+    res.status(201).json({ user: result.rows[0] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/login", (req, res, next) => {
+  passport.authenticate("local", (err, user, info) => {
+    if (err) return next(err);
+    if (!user) return res.status(401).json({ error: info?.message || "Login failed" });
+
+    req.logIn(user, (err) => {
+      if (err) return next(err);
+      res.json({ user: { id: user.id, name: user.name, email: user.email } });
+    });
+  })(req, res, next);
+});
+
+app.get("/api/me", (req, res) => {
+  if (!req.isAuthenticated()) {
+    return res.status(401).json({ error: "Not logged in" });
+  }
+  res.json({ user: { id: req.user.id, name: req.user.name, email: req.user.email } });
 });
 
 const port = process.env.PORT || 3000;
