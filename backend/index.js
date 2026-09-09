@@ -6,6 +6,7 @@ const session = require("express-session");
 const pgSession = require("connect-pg-simple")(session);
 const passport = require("passport");
 const LocalStrategy = require("passport-local").Strategy;
+const GoogleStrategy = require("passport-google-oauth20").Strategy;
 const bcrypt = require("bcryptjs");
 
 const app = express();
@@ -48,6 +49,40 @@ passport.deserializeUser(async (id, done) => {
     done(err);
   }
 });
+
+passport.use(new GoogleStrategy(
+  {
+    clientID: process.env.GOOGLE_CLIENT_ID,
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+    callbackURL: "http://localhost:3000/auth/google/callback",
+  },
+  async (accessToken, refreshToken, profile, done) => {
+    try {
+      const byGoogleId = await pool.query("SELECT * FROM users WHERE google_id = $1", [profile.id]);
+      if (byGoogleId.rows.length > 0) {
+        return done(null, byGoogleId.rows[0]);
+      }
+
+      const email = profile.emails[0].value;
+      const byEmail = await pool.query("SELECT * FROM users WHERE email = $1", [email]);
+      if (byEmail.rows.length > 0) {
+        const linked = await pool.query(
+          "UPDATE users SET google_id = $1 WHERE id = $2 RETURNING *",
+          [profile.id, byEmail.rows[0].id]
+        );
+        return done(null, linked.rows[0]);
+      }
+
+      const created = await pool.query(
+        "INSERT INTO users (name, email, google_id) VALUES ($1, $2, $3) RETURNING *",
+        [profile.displayName, email, profile.id]
+      );
+      return done(null, created.rows[0]);
+    } catch (err) {
+      return done(err);
+    }
+  }
+));
 
 app.use(
   session({
@@ -125,6 +160,15 @@ app.get("/api/me", (req, res) => {
   }
   res.json({ user: { id: req.user.id, name: req.user.name, email: req.user.email } });
 });
+
+app.get("/auth/google", passport.authenticate("google", { scope: ["profile", "email"] }));
+
+app.get("/auth/google/callback",
+  passport.authenticate("google", { failureRedirect: "/api/me" }),
+  (req, res) => {
+    res.redirect("/api/me");
+  }
+);
 
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
