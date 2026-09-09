@@ -50,39 +50,47 @@ passport.deserializeUser(async (id, done) => {
   }
 });
 
-passport.use(new GoogleStrategy(
-  {
-    clientID: process.env.GOOGLE_CLIENT_ID,
-    clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-    callbackURL: "http://localhost:3000/auth/google/callback",
-  },
-  async (accessToken, refreshToken, profile, done) => {
-    try {
-      const byGoogleId = await pool.query("SELECT * FROM users WHERE google_id = $1", [profile.id]);
-      if (byGoogleId.rows.length > 0) {
-        return done(null, byGoogleId.rows[0]);
-      }
-
-      const email = profile.emails[0].value;
-      const byEmail = await pool.query("SELECT * FROM users WHERE email = $1", [email]);
-      if (byEmail.rows.length > 0) {
-        const linked = await pool.query(
-          "UPDATE users SET google_id = $1 WHERE id = $2 RETURNING *",
-          [profile.id, byEmail.rows[0].id]
+passport.use(
+  new GoogleStrategy(
+    {
+      clientID: process.env.GOOGLE_CLIENT_ID,
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+      callbackURL: "http://localhost:3000/auth/google/callback",
+    },
+    async (accessToken, refreshToken, profile, done) => {
+      try {
+        const byGoogleId = await pool.query(
+          "SELECT * FROM users WHERE google_id = $1",
+          [profile.id],
         );
-        return done(null, linked.rows[0]);
-      }
+        if (byGoogleId.rows.length > 0) {
+          return done(null, byGoogleId.rows[0]);
+        }
 
-      const created = await pool.query(
-        "INSERT INTO users (name, email, google_id) VALUES ($1, $2, $3) RETURNING *",
-        [profile.displayName, email, profile.id]
-      );
-      return done(null, created.rows[0]);
-    } catch (err) {
-      return done(err);
-    }
-  }
-));
+        const email = profile.emails[0].value;
+        const byEmail = await pool.query(
+          "SELECT * FROM users WHERE email = $1",
+          [email],
+        );
+        if (byEmail.rows.length > 0) {
+          const linked = await pool.query(
+            "UPDATE users SET google_id = $1 WHERE id = $2 RETURNING *",
+            [profile.id, byEmail.rows[0].id],
+          );
+          return done(null, linked.rows[0]);
+        }
+
+        const created = await pool.query(
+          "INSERT INTO users (name, email, google_id) VALUES ($1, $2, $3) RETURNING *",
+          [profile.displayName, email, profile.id],
+        );
+        return done(null, created.rows[0]);
+      } catch (err) {
+        return done(err);
+      }
+    },
+  ),
+);
 
 app.use(
   session({
@@ -113,20 +121,38 @@ app.get("/api/health", async (req, res) => {
   }
 });
 
+function requireAuth(req, res, next) {
+  if (!req.isAuthenticated()) {
+    return res.status(401).json({ error: "Not logged in" });
+  }
+  next();
+}
+
 app.post("/api/signup", async (req, res) => {
   const { name, email, password } = req.body;
   if (!name || !email || !password) {
-    return res.status(400).json({ error: "name, email, and password are required" });
+    return res
+      .status(400)
+      .json({ error: "name, email, and password are required" });
   }
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    return res.status(400).json({ error: "Please provide a valid email address" });
+    return res
+      .status(400)
+      .json({ error: "Please provide a valid email address" });
   }
   if (!/^(?=.*[A-Z])(?=.*[0-9]).{8,16}$/.test(password)) {
-    return res.status(400).json({ error: "Password must be 8-16 characters with at least one uppercase letter and one number" });
+    return res
+      .status(400)
+      .json({
+        error:
+          "Password must be 8-16 characters with at least one uppercase letter and one number",
+      });
   }
 
   try {
-    const existing = await pool.query("SELECT id FROM users WHERE email = $1", [email]);
+    const existing = await pool.query("SELECT id FROM users WHERE email = $1", [
+      email,
+    ]);
     if (existing.rows.length > 0) {
       return res.status(409).json({ error: "Email already registered" });
     }
@@ -134,7 +160,7 @@ app.post("/api/signup", async (req, res) => {
     const passwordHash = await bcrypt.hash(password, 10);
     const result = await pool.query(
       "INSERT INTO users (name, email, password_hash) VALUES ($1, $2, $3) RETURNING id, name, email",
-      [name, email, passwordHash]
+      [name, email, passwordHash],
     );
     res.status(201).json({ user: result.rows[0] });
   } catch (err) {
@@ -145,7 +171,8 @@ app.post("/api/signup", async (req, res) => {
 app.post("/api/login", (req, res, next) => {
   passport.authenticate("local", (err, user, info) => {
     if (err) return next(err);
-    if (!user) return res.status(401).json({ error: info?.message || "Login failed" });
+    if (!user)
+      return res.status(401).json({ error: info?.message || "Login failed" });
 
     req.logIn(user, (err) => {
       if (err) return next(err);
@@ -154,20 +181,34 @@ app.post("/api/login", (req, res, next) => {
   })(req, res, next);
 });
 
-app.get("/api/me", (req, res) => {
-  if (!req.isAuthenticated()) {
-    return res.status(401).json({ error: "Not logged in" });
-  }
-  res.json({ user: { id: req.user.id, name: req.user.name, email: req.user.email } });
+app.get("/api/me", requireAuth, (req, res) => {
+  res.json({
+    user: { id: req.user.id, name: req.user.name, email: req.user.email },
+  });
 });
 
-app.get("/auth/google", passport.authenticate("google", { scope: ["profile", "email"] }));
+app.post("/api/connect", requireAuth, (req, res) => {
+  res.json({ message: "Thanks for reaching out! We'll be in touch soon." });
+});
 
-app.get("/auth/google/callback",
+app.post("/api/logout", (req, res, next) => {
+  req.logout((err) => {
+    if (err) return next(err);
+    res.json({ message: "Logged out successfully" });
+  });
+});
+
+app.get(
+  "/auth/google",
+  passport.authenticate("google", { scope: ["profile", "email"] }),
+);
+
+app.get(
+  "/auth/google/callback",
   passport.authenticate("google", { failureRedirect: "/api/me" }),
   (req, res) => {
     res.redirect("/api/me");
-  }
+  },
 );
 
 const port = process.env.PORT || 3000;
