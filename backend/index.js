@@ -8,20 +8,18 @@ const passport = require("passport");
 const LocalStrategy = require("passport-local").Strategy;
 const GoogleStrategy = require("passport-google-oauth20").Strategy;
 const bcrypt = require("bcryptjs");
+const { PrismaClient } = require("./generated/prisma");
 
 const app = express();
 const pool = new Pool();
+const prisma = new PrismaClient();
 
 passport.use(
   new LocalStrategy(
     { usernameField: "email" },
     async (email, password, done) => {
       try {
-        const result = await pool.query(
-          "SELECT * FROM users WHERE email = $1",
-          [email],
-        );
-        const user = result.rows[0];
+        const user = await prisma.users.findUnique({ where: { email } });
         if (!user)
           return done(null, false, { message: "Incorrect email or password" });
 
@@ -43,8 +41,8 @@ passport.serializeUser((user, done) => {
 
 passport.deserializeUser(async (id, done) => {
   try {
-    const result = await pool.query("SELECT * FROM users WHERE id = $1", [id]);
-    done(null, result.rows[0]);
+    const user = await prisma.users.findUnique({ where: { id } });
+    done(null, user);
   } catch (err) {
     done(err);
   }
@@ -59,32 +57,27 @@ passport.use(
     },
     async (accessToken, refreshToken, profile, done) => {
       try {
-        const byGoogleId = await pool.query(
-          "SELECT * FROM users WHERE google_id = $1",
-          [profile.id],
-        );
-        if (byGoogleId.rows.length > 0) {
-          return done(null, byGoogleId.rows[0]);
+        const byGoogleId = await prisma.users.findUnique({
+          where: { google_id: profile.id },
+        });
+        if (byGoogleId) {
+          return done(null, byGoogleId);
         }
 
         const email = profile.emails[0].value;
-        const byEmail = await pool.query(
-          "SELECT * FROM users WHERE email = $1",
-          [email],
-        );
-        if (byEmail.rows.length > 0) {
-          const linked = await pool.query(
-            "UPDATE users SET google_id = $1 WHERE id = $2 RETURNING *",
-            [profile.id, byEmail.rows[0].id],
-          );
-          return done(null, linked.rows[0]);
+        const byEmail = await prisma.users.findUnique({ where: { email } });
+        if (byEmail) {
+          const linked = await prisma.users.update({
+            where: { id: byEmail.id },
+            data: { google_id: profile.id },
+          });
+          return done(null, linked);
         }
 
-        const created = await pool.query(
-          "INSERT INTO users (name, email, google_id) VALUES ($1, $2, $3) RETURNING *",
-          [profile.displayName, email, profile.id],
-        );
-        return done(null, created.rows[0]);
+        const created = await prisma.users.create({
+          data: { name: profile.displayName, email, google_id: profile.id },
+        });
+        return done(null, created);
       } catch (err) {
         return done(err);
       }
@@ -150,19 +143,17 @@ app.post("/api/signup", async (req, res) => {
   }
 
   try {
-    const existing = await pool.query("SELECT id FROM users WHERE email = $1", [
-      email,
-    ]);
-    if (existing.rows.length > 0) {
+    const existing = await prisma.users.findUnique({ where: { email } });
+    if (existing) {
       return res.status(409).json({ error: "Email already registered" });
     }
 
     const passwordHash = await bcrypt.hash(password, 10);
-    const result = await pool.query(
-      "INSERT INTO users (name, email, password_hash) VALUES ($1, $2, $3) RETURNING id, name, email",
-      [name, email, passwordHash],
-    );
-    res.status(201).json({ user: result.rows[0] });
+    const user = await prisma.users.create({
+      data: { name, email, password_hash: passwordHash },
+      select: { id: true, name: true, email: true },
+    });
+    res.status(201).json({ user });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
