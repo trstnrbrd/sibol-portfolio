@@ -8,19 +8,10 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model session {
-  sid    String   @id @db.VarChar
-  sess   Json     @db.Json
-  expire DateTime @db.Timestamp(6)
-
-  @@index([expire], map: "IDX_session_expire")
-}
-
-model users {
-  id            Int      @id @default(autoincrement())
-  name          String   @db.VarChar(255)
-  email         String   @unique @db.VarChar(255)
-  password_hash String?  @db.VarChar(255)
-  google_id     String?  @unique @db.VarChar(255)
-  created_at    DateTime @default(now()) @db.Timestamptz(6)
+model leads {
+  id         Int      @id @default(autoincrement())
+  name       String   @db.VarChar(255)
+  email      String   @db.VarChar(255)
+  message    String
+  created_at DateTime @default(now()) @db.Timestamptz(6)
 }
